@@ -13,7 +13,7 @@ from scipy.integrate import solve_ivp
 
 
 class Protoplanet():
-    # 
+    gasAccretion = False # will be set to True if gas accretion needs to be included
     tau_thr = False
 
     def __init__(self, disc, r0, M0=0.01*u.Mearth, kappa=0.005*u.m**2/u.kg, tau=100*u.Myr):
@@ -38,11 +38,12 @@ class Protoplanet():
         self.tau = tau      # threshold for the doubling time so that gas accretion starts
     
     
-    def choose_model(self,threshold_gas=False):
+    def choose_model(self,threshold_gas=False, gasAccretion=False):
         """
         Set threshold_gas=True to activate gas accretion by pebble decay pathway
         """
         self.tau_thr = threshold_gas
+        self.gasAccretion = gasAccretion
 
     # Hill radius
     def hill_radius(self, r, M):
@@ -52,7 +53,18 @@ class Protoplanet():
     def Hp(self, r, t):
         return self.disc.H(r)*np.sqrt(self.disc.delta/(self.disc.delta + self.disc.St(r, t)))
 
- 
+    # transition mass between Bondi and Hill regime
+    def Mt(self, r, t, tunit):
+        return (25/144)*self.disc.delta_v(r, t*tunit)**3/G/self.disc.kepler_angular(r)/self.disc.St(r, t*tunit)
+    
+    # accretion radius in Hill regime
+    def Racc_Hill(self, r, M, t, tunit):
+        return (self.disc.St(r, t*tunit)/0.1)**(1/3)*self.hill_radius(r, M)
+
+     # accretion radius in Bondi regime
+    def Racc_Bondi(self, r, M, t, tunit):
+        return (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
+    
     def deriv_solid(self, t, y, tunit, runit, Munit):
         """
         ODEs for r (distance from protoplanet to star) and M (mass of protoplanet).
@@ -78,28 +90,43 @@ class Protoplanet():
         """
         r, M = y[0]*runit, y[1]*Munit
 
-        
-        # transition mass from Bondi to Hill regime
-        Mt = (25/144)*self.disc.delta_v(r, t*tunit)**3/G/self.disc.kepler_angular(r)/self.disc.St(r, t*tunit)
-        if M > Mt: # Check if it is Bondi regime
-            Racc = (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
-        else: 
-            Racc = (self.disc.St(r, t*tunit)/0.1)**(1/3)*self.hill_radius(r, M)
-        d_v = self.disc.delta_v(r,t*tunit) + self.disc.kepler_angular(r)*Racc
 
-        # 2D pebble accretion
-        Mdot = 2*Racc*self.disc.sigma_p(r, t, tunit)*d_v
-        
-        # check if 3D accretion. If so, add correction
-        RaccH_ratio = Racc/self.Hp(r, t*tunit)
+        if isinstance(M.value, float):
+            if M>self.Miso(r): return 0., 0. # check if protoplanet larger than Miso
+            if M > self.Mt(r, t, tunit): # check if it is Bondi/Hill regime
+                Racc = self.Racc_Hill(r, M, t, tunit)
+            else:
+                Racc = self.Racc_Bondi(r, M, t, tunit)
+            d_v = self.disc.delta_v(r,t*tunit) + self.disc.kepler_angular(r)*Racc
 
-        if RaccH_ratio < np.sqrt(8/np.pi):
-            Mdot *= RaccH_ratio*np.sqrt(np.pi/8)
-
+            # 2D pebble accretion
+            Mdot = 2*Racc*self.disc.sigma_p(r, t, tunit)*d_v
+            
+            # check if 3D accretion. If so, add correction
+            RaccH_ratio = Racc/self.Hp(r, t*tunit)
+            if RaccH_ratio < np.sqrt(8/np.pi):
+                Mdot *= RaccH_ratio*np.sqrt(np.pi/8)
                 
-        if np.abs(Mdot.to(u.Mearth/u.yr)) > np.abs((self.disc.Mp_dot(r, t, tunit)).to(u.Mearth/u.yr)):
-            print('CAUTION: Growth rate higher than pebble flux!')
-            Mdot = self.disc.Mp_dot(r, t, tunit)
+            if np.abs(Mdot.to(u.Mearth/u.yr)) > np.abs((self.disc.Mp_dot(r, t, tunit)).to(u.Mearth/u.yr)):
+                # this should not happen!
+                print(f'CAUTION: Growth rate higher than pebble flux! {M:.2f}, {r:.2f}, {t:.2f}')
+                Mdot = self.disc.Mp_dot(r, t, tunit)
+        else:
+            Racc = np.where(M > self.Mt(r, t, tunit),
+                            self.Racc_Hill(r, M, t, tunit),
+                            self.Racc_Bondi(r, M, t, tunit))
+            d_v = self.disc.delta_v(r,t*tunit) + self.disc.kepler_angular(r)*Racc
+
+            # 2D pebble accretion
+            Mdot = 2*Racc*self.disc.sigma_p(r, t, tunit)*d_v
+            
+            # check if 3D accretion. If so, add correction
+            RaccH_ratio = Racc/self.Hp(r, t*tunit)
+            Mdot *= np.where(RaccH_ratio < np.sqrt(8/np.pi), 
+                             RaccH_ratio*np.sqrt(np.pi/8), 1)
+            
+            Mdot = np.where(np.abs(Mdot.to(u.Mearth/u.yr)) > np.abs((self.disc.Mp_dot(r, t, tunit)).to(u.Mearth/u.yr)),
+                     self.disc.Mp_dot(r, t, tunit), Mdot)
         
         # migration rate
         rdot = -self.disc.kmig*(M/self.disc.Mstar)*(self.disc.sigma_g(r, t, tunit)*r**2/self.disc.Mstar)
@@ -107,6 +134,7 @@ class Protoplanet():
         # effect of gap oppening
         rdot /= (1+ (M/2.3/self.Miso(r))**2)
         return (rdot*tunit/runit).decompose(), (np.abs(Mdot)*tunit/Munit).decompose()
+
     
 
     def M_equal_Miso(self, t, y, tunit, runit, Munit):
@@ -125,21 +153,18 @@ class Protoplanet():
         Returns
         -------
         float
-            if 0, the simulation stops.
+            if <0 the simulation stops.
     
         """
         r = y[0]*runit
         Miso_ = self.Miso(r)
-        return round(Miso_.to(Munit).value - y[1], 4)
-    
+        return Miso_.to(Munit).value - y[1]
+    M_equal_Miso.terminal = True
     
     def Miso(self, r):
         Miso = (25*u.Mearth*(self.disc.H(r)/r/0.05)**3).to(u.Mearth)
         Miso *= (0.34*(np.log10(0.001)/np.log10(self.disc.delta))**4 + 0.66)*(1-(-self.disc.chi0+2.5)/6)
         return Miso.to(u.Mearth)
-
-    M_equal_Miso.terminal = True
-
     
     
     def doublingMass(self, t, y, tunit, runit, Munit):
@@ -147,8 +172,8 @@ class Protoplanet():
 
         
         # transition mass from Bondi to Hill regime
-        Mt = (25/144)*self.disc.delta_v(r, t*tunit)**3/G/self.disc.kepler_angular(r)/self.disc.St(r, t*tunit)
-        if M > Mt: # Check if it is Bondi regime
+        #Mt = (25/144)*self.disc.delta_v(r, t*tunit)**3/G/self.disc.kepler_angular(r)/self.disc.St(r, t*tunit)
+        if M > self.Mt(r, t, tunit): # Check if it is Bondi regime
             Racc = (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
         else: 
             Racc = (self.disc.St(r, t*tunit)/0.1)**(1/3)*self.hill_radius(r, M)
@@ -247,4 +272,3 @@ class Protoplanet():
 
 
     
-
