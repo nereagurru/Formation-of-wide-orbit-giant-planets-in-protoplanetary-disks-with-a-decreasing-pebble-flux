@@ -363,7 +363,8 @@ class ProtoplanetaryDisc_Zrt():
         return Z.decompose()#(self.xi*np.exp((1-vr_ur)*(t-self.t0)/self.lifetime)).decompose()
 
     
-    # to compute b0 parameter, which goes on the exponent of Z
+    # to compute b0 parameter, which goes on the exponent of Z; note that 
+    # chi is slightly different to b0 from ProtoplanetaryDisc_Zt
     def b0_calculate(self):
-        return 2/3*self.chi(self.__R1, self.t0)*self.St_/self.alpha
+        return 2/3*self.chi0*self.St_/self.alpha
 
