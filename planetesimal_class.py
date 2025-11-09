@@ -9,7 +9,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.constants import G
 from scipy.integrate import solve_ivp
-from Disc_class import ProtoplanetaryDisc
 from Plotting import init_plot
 
 
