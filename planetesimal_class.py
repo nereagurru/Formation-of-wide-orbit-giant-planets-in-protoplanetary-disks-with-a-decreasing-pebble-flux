@@ -9,6 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.constants import G
 from scipy.integrate import solve_ivp
+
+from Disc_class import ProtoplanetaryDisc
 from Plotting import init_plot
 
 
@@ -184,8 +186,10 @@ class Planetesimal():
 
         if self.BondiRegime:
             Racc = (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
+            #d_v = self.disc.delta_v(r,t*tunit)
         else: 
             Racc = (self.disc.St(r, t*tunit)/0.1)**(1/3)*self.hill_radius(r, M)
+            #d_v = self.disc.kepler_angular(r)*Racc
         d_v = self.disc.delta_v(r,t*tunit) + self.disc.kepler_angular(r)*Racc
 
         Mdot = 2*Racc*self.disc.sigma_p(r, t, tunit)*d_v
@@ -195,9 +199,9 @@ class Planetesimal():
         if self.twoD == False:
             #Mdot 3D
 
-            RaccH_ratio = np.sqrt(8/np.pi)*Racc/self.Hp(r, t*tunit)
+            RaccH_ratio = Racc/self.Hp(r, t*tunit)
             # If Racc/Hp < 1, M3D. Once M2D, we don't need to check again.
-            if RaccH_ratio < 1:
+            if RaccH_ratio < np.sqrt(8/np.pi):
                 Mdot *= RaccH_ratio*np.sqrt(np.pi/8)
             else:
                 self.twoD = True
@@ -210,6 +214,9 @@ class Planetesimal():
         rdot *= (self.disc.H(r)/r)**(-2)*(self.disc.kepler_angular(r)*r)
         if self.migration_gap:
             rdot /= (1+ (M/2.3/self.Miso(r))**2)
+            #rdot *= 1/(1 + 0.04*self.K(r, M))
+
+        #reduction = ((self.disc.vr_solid(r, t*tunit)-rdot)/self.disc.vr_solid(r, t*tunit)).decompose()
         return (rdot*tunit/runit).decompose(), (np.abs(Mdot)*tunit/Munit).decompose()
     
 
@@ -257,6 +264,9 @@ class Planetesimal():
     def Miso(self, r):
         Miso = (25*u.Mearth*(self.disc.H(r)/r/0.05)**3).to(u.Mearth)
         Miso *= (0.34*(np.log10(0.001)/np.log10(self.disc.delta))**4 + 0.66)*(1-(-self.disc.chi0+2.5)/6)
+        #Miso *= self.disc.Mstar/u.Msun
+        #fit = (self.disc.H(r)/r/0.05)**3*(0.34*(np.log10(0.001)/np.log10(self.disc.delta))**4 + 0.66)*(1-(-self.disc.chi0+2.5)/6)
+        #Miso = (25 + self.disc.delta/0.00476/2/self.disc.St(r))*fit*u.Mearth
         return Miso.to(u.Mearth)
 
     M_equal_Miso.terminal = True
@@ -283,21 +293,20 @@ class Planetesimal():
 
         if self.BondiRegime:
             Racc = (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
+            #d_v = self.disc.delta_v(r,t*tunit)
         else: 
             Racc = (self.disc.St(r, t*tunit)/0.1)**(1/3)*self.hill_radius(r, M)
-
+            #d_v = self.disc.kepler_angular(r)*Racc
         d_v = self.disc.delta_v(r,t*tunit) + self.disc.kepler_angular(r)*Racc
 
         Mdot = 2*Racc*self.disc.sigma_p(r, t, tunit)*d_v
 
-        
         # Once that the accretion is 2D it cannot be 3D
         if self.twoD == False:
             #Mdot 3D
-
-            RaccH_ratio = np.sqrt(8/np.pi)*Racc/self.Hp(r, t*tunit)
+            RaccH_ratio = Racc/self.Hp(r, t*tunit)
             # If Racc/Hp < 1, M3D. Once M2D, we don't need to check again.
-            if RaccH_ratio < 1:
+            if RaccH_ratio < np.sqrt(8/np.pi):
                 Mdot *= RaccH_ratio*np.sqrt(np.pi/8)
             else:
                 self.twoD = True
@@ -329,6 +338,7 @@ class Planetesimal():
         
         if self.migration_gap:
             rdot /= (1+ (M/2.3/self.Miso(r))**2)
+            #rdot *= 1/(1 + 0.04*self.K(r, M))
         return (rdot*tunit/runit).decompose(), (Mdot*tunit/Munit).decompose()
     
     
@@ -384,10 +394,14 @@ class Planetesimal():
             y0 = r[-1], M[-1]
             soln = solve_ivp(self.deriv_gas, (t[-1], tf.value), y0, max_step=max_step, args=(t0.unit, self.r0.unit, self.M0.unit))
             tg, rg, Mg = soln.t, soln.y[0], soln.y[1]
+            #t = np.concatenate((t, soln.t[1:]))
+            #r = np.concatenate((r, soln.y[0][1:]))
+            #M = np.concatenate((M, soln.y[1][1:]))
             return t*tf.unit, r*self.r0.unit, M*self.M0.unit, tg*tf.unit, rg*self.r0.unit, Mg*self.M0.unit
         else:
             return t*tf.unit, r*self.r0.unit, M*self.M0.unit, None, None, None
     
     def Hp(self, r, t):
         return self.disc.H(r)*np.sqrt(self.disc.delta/(self.disc.delta + self.disc.St(r, t)))
+
 
