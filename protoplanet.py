@@ -1,3 +1,4 @@
+
 import astropy.units as u
 import numpy as np
 from astropy.constants import G
@@ -8,7 +9,7 @@ class Protoplanet():
     gasAccretion = False # True if gas accretion activated
     tau_thr = False      # True if pebble decay pathway for gas accretion activated
 
-    def __init__(self, disc, r0, M0=0.01*u.Mearth, kappa=0.005*u.m**2/u.kg, tau=100*u.Myr):
+    def __init__(self, disc, r0, M0=0.01*u.Mearth, kappa=0.005*u.m**2/u.kg, tau=10*u.Myr):
         """
         Initialise the planetesimal.
 
@@ -175,18 +176,20 @@ class Protoplanet():
     def doublingMass(self, t, y, tunit, runit, Munit):
         M = y[1]*Munit
         Mdot = self.deriv_solid(t, y, tunit, runit, Munit)[1]*Munit/tunit
-        
-        # check if doubling mass timescale is longer than threshold timescale
-        if (M/Mdot).to(u.Myr) > self.tau:
-            return 0
+        if M>0.1*u.Mearth: # otherwise it will never accrete enough gass
+            # check if doubling mass timescale is longer than threshold timescale
+            if (M/Mdot).to(u.Myr) > self.tau:
+                return 0
+            else:
+                return 1
         else:
             return 1
+        
     doublingMass.terminal = True
     
     # migration and gas accretion rate onto protoplanet
     def deriv_gas(self, t, y, tunit, runit, Munit):
         r, M = y[0]*runit, y[1]*Munit
-
         # gas accretion rate towards star
         Mdot_g = np.abs(self.disc.Mg_dot(r, t, tunit)).copy()
      
@@ -206,7 +209,7 @@ class Protoplanet():
         return (rdot*tunit/runit).decompose(), (Mdot*tunit/Munit).decompose()
     
     
-    def rM_numerical(self, t0, tf, max_step=0.001, method='RK45'):
+    def rM_numerical(self, t0, tf, max_step=0.001, method='RK45', return_status=False):
         """
         Calculate numerically r (distance from protoplanet to star) and M
         (mass of protoplanet) over the time.
@@ -242,19 +245,31 @@ class Protoplanet():
                              events=self.M_equal_Miso, method=method)
 
         t, r, M = soln.t, soln.y[0], soln.y[1]
-        
+
         if soln.status == 1 and self.gasAccretion == True:
             print(f'Gas accretion starting t is {t[-1]}')
             print(f'Gas accretion starting r is {r[-1]}')
             print(f'Gas accretion starting M is {M[-1]}')
             y0 = r[-1], M[-1]
-            soln = solve_ivp(self.deriv_gas, (t[-1], tf.value), y0, max_step=max_step, args=(t0.unit, self.r0.unit, self.M0.unit))
-            tg, rg, Mg = soln.t, soln.y[0], soln.y[1]
-
-            return t*tf.unit, r*self.r0.unit, M*self.M0.unit, tg*tf.unit, rg*self.r0.unit, Mg*self.M0.unit
+            ts, rs, Ms = t, r, M
+            soln2 = solve_ivp(self.deriv_gas, (t[-1], tf.value), y0, 
+                              max_step=max_step, args=(t0.unit, self.r0.unit, self.M0.unit))
+            #print(f'Gas accretion finishes M is {soln.y[1][-1]}')
+            tg, rg, Mg = soln2.t, soln2.y[0], soln2.y[1]
+            
+            if return_status:
+                
+                return ts*tf.unit, rs*self.r0.unit, Ms*self.M0.unit, tg*tf.unit, rg*self.r0.unit, Mg*self.M0.unit, soln.status
+            else:
+                return ts*tf.unit, rs*self.r0.unit, Ms*self.M0.unit, tg*tf.unit, rg*self.r0.unit, Mg*self.M0.unit
         else:
-            return t*tf.unit, r*self.r0.unit, M*self.M0.unit, None, None, None
+            if return_status:
+                return t*tf.unit, r*self.r0.unit, M*self.M0.unit, None, None, None, soln.status
+            else:
+                return t*tf.unit, r*self.r0.unit, M*self.M0.unit, None, None, None
     
+
+
 
 
     
