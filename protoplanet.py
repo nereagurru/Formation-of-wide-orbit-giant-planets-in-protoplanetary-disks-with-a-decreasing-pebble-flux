@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Nov  9 18:46:18 2025
-This code is used to calculate the growth and migration of protoplanets
-@author: nerea
-"""
-
 import astropy.units as u
 import numpy as np
 from astropy.constants import G
@@ -13,8 +5,8 @@ from scipy.integrate import solve_ivp
 
 
 class Protoplanet():
-    gasAccretion = False # will be set to True if gas accretion needs to be included
-    tau_thr = False
+    gasAccretion = False # True if gas accretion activated
+    tau_thr = False      # True if pebble decay pathway for gas accretion activated
 
     def __init__(self, disc, r0, M0=0.01*u.Mearth, kappa=0.005*u.m**2/u.kg, tau=100*u.Myr):
         """
@@ -28,8 +20,10 @@ class Protoplanet():
             Initial position of the planetesimal
         M0 : float  Mass units or None
             Initial mass of the planetesimal. If None, calculated by M0_calculate().
-        fplt : float
-            Ratio between the maximum mass and the characteristic mass fromed by Streaming instability
+        kappa : float Length**2/mass units
+            Opacity for gas accretion
+        tau : float time
+            Threshold timescale to start gas accretion by pebble decay pathway
         """
         self.disc = disc    # disc at which protoplanet forms
         self.r0 = r0        # initial position of embryo
@@ -41,6 +35,8 @@ class Protoplanet():
     def choose_model(self,threshold_gas=False, gasAccretion=False):
         """
         Set threshold_gas=True to activate gas accretion by pebble decay pathway
+        Set gasAccretion=True to activate gas accretion
+
         """
         self.tau_thr = threshold_gas
         self.gasAccretion = gasAccretion
@@ -65,6 +61,13 @@ class Protoplanet():
     def Racc_Bondi(self, r, M, t, tunit):
         return (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
     
+    # type I migration rate
+    def typeI_migration(self, r, M, t, tunit):
+        rdotI = -self.disc.kmig*(M/self.disc.Mstar)*(self.disc.sigma_g(r, t, tunit)*r**2/self.disc.Mstar)
+        rdotI *= (self.disc.H(r)/r)**(-2)*(self.disc.kepler_angular(r)*r)
+        return rdotI
+        
+    # migration and pebble accretion rate onto protoplanet
     def deriv_solid(self, t, y, tunit, runit, Munit):
         """
         ODEs for r (distance from protoplanet to star) and M (mass of protoplanet).
@@ -75,16 +78,16 @@ class Protoplanet():
         ----------
         t : scalar
         y : ndarray (2,)
-            Distance from protoplanet to star and the mass of the protoplanet.
+            r, M. Distance from protoplanet to star and the mass of the protoplanet.
         tunit : Astropy unit, time dim
         runit : Astropy unit, lenght dim
         Munit : Astropy unit, mass dim
     
         Returns
         -------
-        rdot : float, adim
+        rdot : float  (can also be array), adim
             Derivative of the distance.
-        Mdot : float, adim
+        Mdot : float (can also be array), adim
             Derivative of the mass.
     
         """
@@ -105,10 +108,11 @@ class Protoplanet():
             # check if 3D accretion. If so, add correction
             RaccH_ratio = Racc/self.Hp(r, t*tunit)
             if RaccH_ratio < np.sqrt(8/np.pi):
-                Mdot *= RaccH_ratio*np.sqrt(np.pi/8)
+                Mdot *= RaccH_ratio*np.sqrt(np.pi/8) # 3D accretion
                 
+            # check if accretion rate smaller than pebble flux.
+            # condition should not be true
             if np.abs(Mdot.to(u.Mearth/u.yr)) > np.abs((self.disc.Mp_dot(r, t, tunit)).to(u.Mearth/u.yr)):
-                # this should not happen!
                 print(f'CAUTION: Growth rate higher than pebble flux! {M:.2f}, {r:.2f}, {t:.2f}')
                 Mdot = self.disc.Mp_dot(r, t, tunit)
         else:
@@ -125,12 +129,12 @@ class Protoplanet():
             Mdot *= np.where(RaccH_ratio < np.sqrt(8/np.pi), 
                              RaccH_ratio*np.sqrt(np.pi/8), 1)
             
+            # this should not occur
             Mdot = np.where(np.abs(Mdot.to(u.Mearth/u.yr)) > np.abs((self.disc.Mp_dot(r, t, tunit)).to(u.Mearth/u.yr)),
                      self.disc.Mp_dot(r, t, tunit), Mdot)
         
         # migration rate
-        rdot = -self.disc.kmig*(M/self.disc.Mstar)*(self.disc.sigma_g(r, t, tunit)*r**2/self.disc.Mstar)
-        rdot *= (self.disc.H(r)/r)**(-2)*(self.disc.kepler_angular(r)*r)
+        rdot = self.typeI_migration(r, M, t, tunit)
         # effect of gap oppening
         rdot /= (1+ (M/2.3/self.Miso(r))**2)
         return (rdot*tunit/runit).decompose(), (np.abs(Mdot)*tunit/Munit).decompose()
@@ -161,6 +165,7 @@ class Protoplanet():
         return Miso_.to(Munit).value - y[1]
     M_equal_Miso.terminal = True
     
+    # pebble isolation mass
     def Miso(self, r):
         Miso = (25*u.Mearth*(self.disc.H(r)/r/0.05)**3).to(u.Mearth)
         Miso *= (0.34*(np.log10(0.001)/np.log10(self.disc.delta))**4 + 0.66)*(1-(-self.disc.chi0+2.5)/6)
@@ -168,31 +173,8 @@ class Protoplanet():
     
     
     def doublingMass(self, t, y, tunit, runit, Munit):
-        r, M = y[0]*runit, y[1]*Munit
-
-        
-        # transition mass from Bondi to Hill regime
-        #Mt = (25/144)*self.disc.delta_v(r, t*tunit)**3/G/self.disc.kepler_angular(r)/self.disc.St(r, t*tunit)
-        if M > self.Mt(r, t, tunit): # Check if it is Bondi regime
-            Racc = (4*self.disc.St(r, t*tunit)/self.disc.kepler_angular(r)*G*M/self.disc.delta_v(r, t*tunit))**(1/2)
-        else: 
-            Racc = (self.disc.St(r, t*tunit)/0.1)**(1/3)*self.hill_radius(r, M)
-        d_v = self.disc.delta_v(r,t*tunit) + self.disc.kepler_angular(r)*Racc
-
-        # 2D pebble accretion
-        Mdot = 2*Racc*self.disc.sigma_p(r, t, tunit)*d_v
-        
-        # check if 3D accretion. If so, add correction
-        RaccH_ratio = Racc/self.Hp(r, t*tunit)
-
-        if RaccH_ratio < np.sqrt(8/np.pi):
-            Mdot *= RaccH_ratio*np.sqrt(np.pi/8)
-
-        # this should always be False; otherwise means that growth rate larger 
-        # than pebble flux, which is unphysical.
-        if np.abs(Mdot.to(u.Mearth/u.yr)) > np.abs((self.disc.Mp_dot(r, t, tunit)).to(u.Mearth/u.yr)):
-            print('true')
-            Mdot = self.disc.Mp_dot(r, t, tunit)
+        M = y[1]*Munit
+        Mdot = self.deriv_solid(t, y, tunit, runit, Munit)[1]*Munit/tunit
         
         # check if doubling mass timescale is longer than threshold timescale
         if (M/Mdot).to(u.Myr) > self.tau:
@@ -201,21 +183,25 @@ class Protoplanet():
             return 1
     doublingMass.terminal = True
     
-    
+    # migration and gas accretion rate onto protoplanet
     def deriv_gas(self, t, y, tunit, runit, Munit):
         r, M = y[0]*runit, y[1]*Munit
 
+        # gas accretion rate towards star
         Mdot_g = np.abs(self.disc.Mg_dot(r, t, tunit)).copy()
      
+        # rate at which gas enters the Hill sphere
         Mdot_disc = 1.5*10**(-3)*u.Mearth/u.yr*(self.disc.H(r)/r/0.05)**(-4)*(M/10/u.Mearth)**(4/3)
         Mdot_disc *= (self.disc.alpha/0.01)**(-1)*(Mdot_g/(10**(-8)*u.Msun/u.yr))/(1+ (M/2.3/self.Miso(r))**2)
+        
+        # rate of contraction of the gaseous envelope
         Mdot_kh = 10**(-5)*u.Mearth/u.yr*(M/10/u.Mearth)**4*(self.kappa/(0.1*u.m**2/u.kg))**(-1)
 
         Mdot = min(Mdot_kh.to(u.Mearth/u.yr), Mdot_disc.to(u.Mearth/u.yr), 0.8*Mdot_g.to(u.Mearth/u.yr))
-        rdot = -self.disc.kmig*(M/self.disc.Mstar)*(self.disc.sigma_g(r, t, tunit)*r**2/self.disc.Mstar)
-        rdot *= (self.disc.H(r)/r)**(-2)*(self.disc.kepler_angular(r)*r)
-        # gap opening
-        rdot /= (1+ (M/2.3/self.Miso(r))**2)
+        
+        # migration rate
+        rdot = self.typeI_migration(r, M, t, tunit)
+        rdot /= (1+ (M/2.3/self.Miso(r))**2) # gap opening
 
         return (rdot*tunit/runit).decompose(), (Mdot*tunit/Munit).decompose()
     
