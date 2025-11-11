@@ -360,7 +360,7 @@ class ProtoplanetaryDisc_Zrt():
         exp_ = np.exp(-(self.chi0*(self.b0+1)/(2-self.gamma)*T + 
                         r_nu**(2-self.gamma)*self.b0)*(T**(self.b0/2/self.chi0)-1)/(self.b0*T))
         Z=self.Z0*T**((self.chi0/(2-self.gamma) + self.b0)/2/self.chi0)*exp_
-        return Z.decompose()#(self.xi*np.exp((1-vr_ur)*(t-self.t0)/self.lifetime)).decompose()
+        return Z.decompose()
 
     
     # to compute b0 parameter, which goes on the exponent of Z; note that 
